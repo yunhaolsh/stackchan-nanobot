@@ -1,6 +1,7 @@
 .run/
 .venv-nanobot/
 .venv*/
+.local-runtime/
 .pytest_cache/
 __pycache__/
 *.py[cod]

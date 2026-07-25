@@ -124,11 +124,20 @@ class ToolRouter:
         "audio": ("audio", "speaker", "volume", "声音", "音量", "静音"),
         "screen": ("screen", "brightness", "theme", "屏幕", "亮度", "主题"),
         "camera": ("camera", "photo", "vision", "看", "拍照", "相机", "看到"),
-        "dance": ("dance", "motion", "跳舞", "舞蹈", "动作", "停止跳舞", "停止舞蹈"),
+        "dance": (
+            "dance",
+            "motion",
+            "跳舞",
+            "跳个舞",
+            "舞蹈",
+            "动作",
+            "停止跳舞",
+            "停止舞蹈",
+        ),
         "status": ("status", "battery", "network", "状态", "电量", "联网"),
     }
 
-    def __init__(self, max_tools: int = 20):
+    def __init__(self, max_tools: int = 8):
         self.max_tools = max(1, max_tools)
 
     @staticmethod
@@ -183,12 +192,14 @@ class DeviceCapabilityGateway:
         rpc_timeout: float = 20.0,
         camera_rpc_timeout: float = 120.0,
         confirmation_ttl: float = 120.0,
+        unavailable_markers: tuple[str, ...] = (),
     ):
         self.policy = policy or ToolPolicy()
         self.router = router or ToolRouter()
         self.rpc_timeout = rpc_timeout
         self.camera_rpc_timeout = max(rpc_timeout, camera_rpc_timeout)
         self.confirmation_ttl = confirmation_ttl
+        self.unavailable_markers = tuple(marker.lower() for marker in unavailable_markers)
         self._lock = threading.RLock()
         self._session: DeviceRPCSession | None = None
         self._tools: dict[str, DeviceTool] = {}
@@ -238,17 +249,15 @@ class DeviceCapabilityGateway:
             tool
             for tool in self.all_tools()
             if self.policy.classify(tool.name) is not PermissionTier.DENY
+            and self._is_available(tool.name)
         ]
 
+    def _is_available(self, tool_name: str) -> bool:
+        lowered = tool_name.lower()
+        return not any(marker in lowered for marker in self.unavailable_markers)
+
     def select_tools(self, prompt: str) -> list[str]:
-        tools = self.model_tools()
-        # The current StackChan firmware exposes at most 20 policy-approved
-        # tools. Sending the complete bounded inventory avoids brittle lexical
-        # intent routing while keeping the model schema small. Larger future
-        # inventories still use the bounded router.
-        if len(tools) <= self.router.max_tools:
-            return [tool.name for tool in tools]
-        return self.router.select(prompt, tools)
+        return self.router.select(prompt, self.model_tools())
 
     def _current(self, tool_name: str) -> tuple[DeviceRPCSession, DeviceTool]:
         with self._lock:
@@ -262,6 +271,8 @@ class DeviceCapabilityGateway:
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> Any:
         arguments = dict(arguments or {})
+        if not self._is_available(tool_name):
+            raise DeviceUnavailable(f"tool backend is not configured: {tool_name}")
         session, _ = self._current(tool_name)
         tier = self.policy.classify(tool_name)
         if tier is PermissionTier.DENY:

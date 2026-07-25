@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "nanobot_bridge"))
 from capabilities import (  # noqa: E402
     DeviceCapabilityGateway,
     DeviceTool,
+    DeviceUnavailable,
     PermissionDenied,
     PermissionTier,
     ToolPolicy,
@@ -63,7 +64,7 @@ def test_camera_requires_confirmation_and_executes_once_after_confirmation():
         gateway.call_tool("self.reboot")
 
 
-def test_bounded_safe_inventory_is_exposed_without_lexical_false_negatives():
+def test_small_inventory_is_still_routed_to_the_relevant_capability_group():
     session = FakeSession()
     gateway = DeviceCapabilityGateway(router=ToolRouter(max_tools=20))
     inventory = [
@@ -77,10 +78,21 @@ def test_bounded_safe_inventory_is_exposed_without_lexical_false_negatives():
 
     selected = gateway.select_tools("跳个舞")
 
-    assert "self.robot.dance" in selected
-    assert "self.robot.set_head_angles" in selected
-    assert "self.camera.take_photo" in selected
-    assert "self.reboot" not in selected
+    assert selected == ["self.robot.dance"]
+
+
+def test_gateway_exposes_no_tools_for_an_ordinary_chat_turn():
+    session = FakeSession()
+    gateway = DeviceCapabilityGateway()
+    gateway.attach(
+        session,
+        [
+            tool("self.robot.dance", "Run a dance motion"),
+            tool("self.timer.start", "Start timer"),
+        ],
+    )
+
+    assert gateway.select_tools("介绍一下你自己") == []
 
 
 def test_camera_has_long_timeout_without_changing_ordinary_tool_timeout():
@@ -96,6 +108,23 @@ def test_camera_has_long_timeout_without_changing_ordinary_tool_timeout():
     gateway.confirm(pending["confirmation_id"])
 
     assert [call[2] for call in session.calls] == [7, 90]
+
+
+def test_unconfigured_camera_backend_is_not_exposed_or_callable():
+    session = FakeSession()
+    gateway = DeviceCapabilityGateway(unavailable_markers=("camera.take_photo",))
+    gateway.attach(
+        session,
+        [tool("self.camera.take_photo"), tool("self.robot.set_led_color")],
+    )
+
+    assert [item.name for item in gateway.all_tools()] == [
+        "self.camera.take_photo",
+        "self.robot.set_led_color",
+    ]
+    assert [item.name for item in gateway.model_tools()] == ["self.robot.set_led_color"]
+    with pytest.raises(DeviceUnavailable, match="backend is not configured"):
+        gateway.call_tool("self.camera.take_photo")
 
 
 def test_router_caps_large_inventories_and_selects_relevant_tools():

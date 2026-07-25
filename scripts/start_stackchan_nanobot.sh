@@ -11,130 +11,8 @@ NANOBOT_BIN="$ROOT_DIR/.venv-nanobot/bin/nanobot"
 PID_DIR="$ROOT_DIR/.run"
 export NANOBOT_WORKSPACE="${NANOBOT_WORKSPACE:-$ROOT_DIR/nanobot_config/workspace}"
 
-CHAT_PROVIDER="${STACKCHAN_CHAT_PROVIDER:-glm}"
-case "$CHAT_PROVIDER" in
-  glm)
-    export OPENAI_API_KEY="${STACKCHAN_CHAT_API_KEY:-${ZHIPU_API_KEY:-${GLM_API_KEY:-}}}"
-    export OPENAI_BASE_URL="${STACKCHAN_GLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
-    export STACKCHAN_CHAT_MODEL="${STACKCHAN_CHAT_MODEL:-glm-4.7-flash}"
-    ;;
-  deepseek)
-    export OPENAI_API_KEY="${STACKCHAN_CHAT_API_KEY:-${DEEPSEEK_API_KEY:-}}"
-    export OPENAI_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
-    export STACKCHAN_CHAT_MODEL="${STACKCHAN_CHAT_MODEL:-deepseek-v4-flash}"
-    ;;
-  openai-compatible)
-    : "${OPENAI_API_KEY:?OPENAI_API_KEY is required for STACKCHAN_CHAT_PROVIDER=openai-compatible}"
-    : "${OPENAI_BASE_URL:?OPENAI_BASE_URL is required for STACKCHAN_CHAT_PROVIDER=openai-compatible}"
-    ;;
-  *)
-    echo "Unsupported STACKCHAN_CHAT_PROVIDER: $CHAT_PROVIDER" >&2
-    exit 1
-    ;;
-esac
-
-if [[ -z "$OPENAI_API_KEY" ]]; then
-  echo "Missing API key for chat provider '$CHAT_PROVIDER'. Set it in the local env file." >&2
-  exit 1
-fi
-
-# Nanobot's OpenAI-compatible provider uses this variable for the real HTTP
-# timeout. Keep the StackChan-facing name as the portable configuration API.
-export NANOBOT_OPENAI_COMPAT_TIMEOUT_S="${NANOBOT_OPENAI_COMPAT_TIMEOUT_S:-${STACKCHAN_CHAT_TIMEOUT:-20}}"
-
-if [[ "$CHAT_PROVIDER" == "glm" && "$STACKCHAN_CHAT_MODEL" != glm-* ]]; then
-  echo "STACKCHAN_CHAT_PROVIDER=glm requires a glm-* chat model, got: $STACKCHAN_CHAT_MODEL" >&2
-  exit 1
-fi
-if [[ "$CHAT_PROVIDER" == "glm" && "${STACKCHAN_CHAT_THINKING:-disabled}" != "disabled" && "${STACKCHAN_CHAT_THINKING:-disabled}" != "enabled" ]]; then
-  echo "STACKCHAN_CHAT_THINKING must be 'disabled' or 'enabled'." >&2
-  exit 1
-fi
-if [[ "$CHAT_PROVIDER" == "deepseek" && "$STACKCHAN_CHAT_MODEL" != deepseek-* ]]; then
-  echo "STACKCHAN_CHAT_PROVIDER=deepseek requires a deepseek-* chat model, got: $STACKCHAN_CHAT_MODEL" >&2
-  exit 1
-fi
-
-append_no_proxy_host() {
-  local url="$1"
-  local host="${url#*://}"
-  host="${host%%/*}"
-  host="${host%%:*}"
-  if [[ -z "$host" ]]; then
-    return
-  fi
-  case ",${NO_PROXY:-}," in
-    *,"$host",*) ;;
-    *) export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$host" ;;
-  esac
-  case ",${no_proxy:-}," in
-    *,"$host",*) ;;
-    *) export no_proxy="${no_proxy:+$no_proxy,}$host" ;;
-  esac
-}
-
-if [[ "${STACKCHAN_BYPASS_PROVIDER_PROXY:-0}" == "1" ]]; then
-  append_no_proxy_host "$OPENAI_BASE_URL"
-  append_no_proxy_host "${STACKCHAN_GLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}"
-fi
-
-ZHIPU_KEY="${ZHIPU_API_KEY:-${GLM_API_KEY:-}}"
-if [[ "${STACKCHAN_ASR_PROVIDER:-glm}" == "glm" ]]; then
-  if [[ -z "${STACKCHAN_ASR_API_KEY:-$ZHIPU_KEY}" ]]; then
-    echo "GLM ASR requires ZHIPU_API_KEY, GLM_API_KEY, or STACKCHAN_ASR_API_KEY." >&2
-    exit 1
-  fi
-  if [[ "${STACKCHAN_ASR_MODEL:-glm-asr-2512}" != glm-asr-* ]]; then
-    echo "STACKCHAN_ASR_PROVIDER=glm requires a glm-asr-* model." >&2
-    exit 1
-  fi
-fi
-if [[ "${STACKCHAN_TTS_PROVIDER:-glm}" == "glm" ]]; then
-  if [[ -z "${STACKCHAN_TTS_API_KEY:-$ZHIPU_KEY}" ]]; then
-    echo "GLM TTS requires ZHIPU_API_KEY, GLM_API_KEY, or STACKCHAN_TTS_API_KEY." >&2
-    exit 1
-  fi
-  if [[ "${STACKCHAN_TTS_MODEL:-glm-tts}" != glm-tts* ]]; then
-    echo "STACKCHAN_TTS_PROVIDER=glm requires a glm-tts model." >&2
-    exit 1
-  fi
-fi
-if [[ "${STACKCHAN_VISION_PROVIDER:-glm}" == "glm" ]]; then
-  if [[ -z "${STACKCHAN_VISION_API_KEY:-$ZHIPU_KEY}" ]]; then
-    echo "GLM Vision requires ZHIPU_API_KEY, GLM_API_KEY, or STACKCHAN_VISION_API_KEY." >&2
-    exit 1
-  fi
-  if [[ "${STACKCHAN_VISION_MODEL:-glm-4.6v-flash}" != glm-*v-* ]]; then
-    echo "STACKCHAN_VISION_PROVIDER=glm requires a GLM vision model such as glm-4.6v-flash." >&2
-    exit 1
-  fi
-fi
-
-if [[ -z "${STACKCHAN_ASR_COMMAND:-}" ]]; then
-  if [[ "${STACKCHAN_ASR_PROVIDER:-glm}" == "glm" ]]; then
-    export STACKCHAN_ASR_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_asr_glm.py"
-  elif [[ "${STACKCHAN_ASR_PROVIDER:-}" == "gemini" ]]; then
-    export STACKCHAN_ASR_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_asr_gemini.py"
-  elif [[ "${STACKCHAN_ENABLE_OPENAI_ASR:-0}" == "1" || "${STACKCHAN_ASR_PROVIDER:-}" == "openai" ]]; then
-    export STACKCHAN_ASR_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_asr_openai.py"
-  fi
-fi
-
-if [[ -z "${STACKCHAN_TTS_COMMAND:-}" ]]; then
-  if [[ "${STACKCHAN_TTS_PROVIDER:-glm}" == "glm" ]]; then
-    export STACKCHAN_TTS_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_tts_glm.py"
-    export STACKCHAN_TTS_STREAMING="${STACKCHAN_TTS_STREAMING:-1}"
-    export STACKCHAN_TTS_COMMAND_STREAMING="${STACKCHAN_TTS_COMMAND_STREAMING:-1}"
-  elif [[ "${STACKCHAN_TTS_PROVIDER:-}" == "gemini" ]]; then
-    export STACKCHAN_TTS_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_tts_gemini.py"
-  elif [[ "${STACKCHAN_ENABLE_OPENAI_TTS:-0}" == "1" || "${STACKCHAN_TTS_PROVIDER:-}" == "openai" ]]; then
-    export STACKCHAN_TTS_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_tts_openai.py"
-  fi
-fi
-
-if [[ -z "${STACKCHAN_VISION_COMMAND:-}" && "${STACKCHAN_VISION_PROVIDER:-glm}" == "glm" ]]; then
-  export STACKCHAN_VISION_COMMAND="$VENV_PY $ROOT_DIR/scripts/stackchan_vision_glm.py"
-fi
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/stackchan_inference_env.sh"
 
 detect_public_host() {
   ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}'
@@ -147,29 +25,31 @@ mkdir -p "$PID_DIR" "$ROOT_DIR/nanobot_config/workspace"
 
 if [[ -n "${STACKCHAN_CHAT_MODEL:-}" ]]; then
   RUNTIME_NANOBOT_CONFIG="$PID_DIR/nanobot_config.runtime.json"
-  "$VENV_PY" - \
+  "$VENV_PY" "$ROOT_DIR/scripts/build_nanobot_runtime_config.py" \
     "$NANOBOT_CONFIG" \
     "$RUNTIME_NANOBOT_CONFIG" \
-    "$STACKCHAN_CHAT_MODEL" \
-    "$CHAT_PROVIDER" \
-    "${STACKCHAN_CHAT_THINKING:-disabled}" <<'PY'
-import json
-import sys
-
-src, dst, model, provider_name, thinking = sys.argv[1:6]
-with open(src, "r", encoding="utf-8") as f:
-    config = json.load(f)
-config.setdefault("modelPresets", {}).setdefault("primary", {})["model"] = model
-provider = config.setdefault("providers", {}).setdefault("openai", {})
-if provider_name in {"glm", "deepseek"}:
-    provider["extraBody"] = {"thinking": {"type": thinking}}
-else:
-    provider.pop("extraBody", None)
-with open(dst, "w", encoding="utf-8") as f:
-    json.dump(config, f, ensure_ascii=False, indent=2)
-    f.write("\n")
-PY
+    --mode "$INFERENCE_MODE" \
+    --chat-model "$STACKCHAN_CHAT_MODEL" \
+    --chat-provider "$CHAT_PROVIDER" \
+    --thinking "${STACKCHAN_CHAT_THINKING:-disabled}" \
+    --local-model "${STACKCHAN_LOCAL_CHAT_MODEL:-Qwen3-4B}" \
+    --local-context-tokens "${STACKCHAN_LOCAL_CHAT_CONTEXT_TOKENS:-16384}" \
+    --local-max-tokens "${STACKCHAN_LOCAL_CHAT_MAX_TOKENS:-1024}"
   NANOBOT_CONFIG="$RUNTIME_NANOBOT_CONFIG"
+fi
+
+if [[ "${STACKCHAN_CONFIG_ONLY:-0}" == "1" ]]; then
+  echo "Inference mode   : $INFERENCE_MODE"
+  echo "Chat provider    : $CHAT_PROVIDER"
+  echo "Chat model       : $STACKCHAN_CHAT_MODEL"
+  echo "Nanobot config   : $NANOBOT_CONFIG"
+  if [[ "$INFERENCE_MODE" != "cloud" ]]; then
+    echo "Local chat       : $STACKCHAN_LOCAL_CHAT_BASE_URL"
+    echo "Local ASR        : $STACKCHAN_LOCAL_ASR_BASE_URL"
+    echo "Local TTS        : $STACKCHAN_LOCAL_TTS_BASE_URL"
+    echo "Local Vision     : $STACKCHAN_LOCAL_VISION_BASE_URL"
+  fi
+  exit 0
 fi
 
 if [[ -z "$PUBLIC_HOST" ]]; then
@@ -239,6 +119,72 @@ wait_http() {
   return 1
 }
 
+local_health_url() {
+  local base="${1%/}"
+  base="${base%/v1}"
+  printf '%s/health\n' "$base"
+}
+
+probe_local_inference() {
+  if [[ "$INFERENCE_MODE" == "cloud" || "${STACKCHAN_LOCAL_HEALTHCHECK:-1}" != "1" ]]; then
+    return 0
+  fi
+
+  local attempts="${STACKCHAN_LOCAL_HEALTH_ATTEMPTS:-3}"
+  local delay="${STACKCHAN_LOCAL_HEALTH_DELAY_S:-1}"
+  local failed=0
+  local code
+  local label
+  local url
+  local -A checked=()
+  while read -r label url; do
+    if [[ -n "${checked[$url]:-}" ]]; then
+      continue
+    fi
+    checked[$url]=1
+    code=000
+    for _ in $(seq 1 "$attempts"); do
+      code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+      if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+        break
+      fi
+      sleep "$delay"
+    done
+    if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then
+      echo "Local $label is not healthy at $url (http $code)" >&2
+      failed=1
+    fi
+  done <<EOF
+Chat $(local_health_url "$STACKCHAN_LOCAL_CHAT_BASE_URL")
+ASR $(local_health_url "$STACKCHAN_LOCAL_ASR_BASE_URL")
+TTS $(local_health_url "$STACKCHAN_LOCAL_TTS_BASE_URL")
+EOF
+
+  if [[ "${STACKCHAN_LOCAL_VISION_ENABLED:-0}" == "1" ]]; then
+    url="$(local_health_url "$STACKCHAN_LOCAL_VISION_BASE_URL")"
+    code=000
+    for _ in $(seq 1 "$attempts"); do
+      code="$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+      if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+        break
+      fi
+      sleep "$delay"
+    done
+    if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then
+      echo "Local Vision is not healthy at $url (http $code)" >&2
+      failed=1
+    fi
+  fi
+
+  if [[ "$failed" == "1" && "$INFERENCE_MODE" == "local" ]]; then
+    echo "Pure local mode requires all enabled local inference services." >&2
+    return 1
+  fi
+  if [[ "$failed" == "1" ]]; then
+    echo "Hybrid mode will start, but unavailable local services cannot be used for fallback." >&2
+  fi
+}
+
 stop_pid_file() {
   local name="$1"
   local pid_file="$2"
@@ -289,6 +235,8 @@ stop_listener_on_port() {
   done
   sleep 1
 }
+
+probe_local_inference
 
 if [[ "${STACKCHAN_RESTART_NANOBOT:-0}" == "1" ]]; then
   stop_pid_file nanobot-api "$PID_DIR/nanobot-api.pid"
@@ -347,6 +295,7 @@ echo "StackChan OTA URL: http://$PUBLIC_HOST:$BRIDGE_PORT/xiaozhi/ota/"
 echo "StackChan WS URL : ws://$PUBLIC_HOST:$BRIDGE_PORT/ws"
 echo "Local MCP URL    : http://127.0.0.1:${STACKCHAN_MCP_PORT:-12801}/mcp"
 echo "Nanobot backend  : embedded in stackchan-bridge"
+echo "Inference mode   : $INFERENCE_MODE"
 if [[ "${STACKCHAN_ENABLE_NANOBOT_API:-0}" == "1" ]]; then
   echo "Nanobot debug API: http://127.0.0.1:$NANOBOT_API_PORT/v1/chat/completions"
 fi
@@ -384,6 +333,9 @@ if [[ -n "${STACKCHAN_VISION_COMMAND:-}" ]]; then
   echo "Vision command   : $STACKCHAN_VISION_COMMAND"
 else
   echo "Vision command   : not configured"
+fi
+if [[ "$INFERENCE_MODE" == "hybrid" ]]; then
+  echo "Local fallback   : ${STACKCHAN_LOCAL_CHAT_MODEL} @ ${STACKCHAN_LOCAL_CHAT_BASE_URL}"
 fi
 if [[ "$PUBLIC_HOST" == *.local ]]; then
   echo "mDNS alias      : $PUBLIC_HOST -> $LAN_IP"

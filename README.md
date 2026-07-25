@@ -37,6 +37,11 @@ STACKCHAN_ENV_FILE="$PWD/.run/stackchan-nanobot.env" ./scripts/start_stackchan_n
 Run host tests with `.venv-nanobot/bin/pytest -q`. Firmware build and flashing
 instructions are maintained in `environment_setup.md` and `docs/`.
 
+Cloud, local, and hybrid inference modes are documented in
+[`docs/stackchan-inference-modes.md`](docs/stackchan-inference-modes.md). Local
+model binaries, virtual environments, runtime logs, and filled environment
+files remain outside Git through `.gitignore`.
+
 Enable the repository secret guard after cloning:
 
 ```bash

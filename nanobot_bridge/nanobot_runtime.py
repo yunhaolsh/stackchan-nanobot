@@ -7,9 +7,69 @@ import os
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from capabilities import DeviceCapabilityGateway
+
+
+_COMPACT_FALLBACK_PROMPT = """You are the StackChan voice agent running through Nanobot.
+Reply in concise Chinese unless the user requests another language.
+Use only Tools provided for the current turn, and invoke them only through structured Tool Calls.
+Never print pseudo Tool syntax, XML Tool tags, or an unavailable Tool name.
+After a successful device action, reply with one short confirmation sentence.
+If a capability is unavailable, state the limitation instead of inventing an action.
+For relative head movement, get current angles before setting new angles.
+Timers and reminders support relative durations, not absolute clock schedules.
+Do not use Markdown, lists, headings, or emoji in spoken replies."""
+_DEFAULT_COMPACT_PROMPT_FILE = (
+    Path(__file__).resolve().parents[1] / "nanobot_config/stackchan-voice-agent.md"
+)
+
+
+def _compact_system_prompt(
+    context: Any,
+    skill_names: list[str] | None = None,
+    channel: str | None = None,
+    session_summary: str | None = None,
+    workspace: Any | None = None,
+    include_memory_recent_history: bool = True,
+    session_key: str | None = None,
+    unified_session: bool = False,
+) -> str:
+    del channel, include_memory_recent_history, session_key, unified_session
+    root = workspace or context.workspace
+    workspace_policy = root / "STACKCHAN.md"
+    configured_policy = Path(
+        os.environ.get("STACKCHAN_COMPACT_PROMPT_FILE", _DEFAULT_COMPACT_PROMPT_FILE)
+    ).expanduser()
+    policy_path = workspace_policy if workspace_policy.is_file() else configured_policy
+    policy = (
+        policy_path.read_text(encoding="utf-8").strip()
+        if policy_path.is_file()
+        else _COMPACT_FALLBACK_PROMPT
+    )
+    parts = [policy]
+
+    memory = context.memory.get_memory_context()
+    if memory and not context._is_template_content(
+        context.memory.read_memory(), "memory/MEMORY.md"
+    ):
+        parts.append(f"# Memory\n\n{memory}")
+
+    configured_skills = {
+        name.strip()
+        for name in os.environ.get("STACKCHAN_COMPACT_SKILLS", "").split(",")
+        if name.strip()
+    }
+    active_skills = sorted(configured_skills | set(skill_names or []))
+    if active_skills:
+        content = context.skills.load_skills_for_context(active_skills)
+        if content:
+            parts.append(f"# Active Skills\n\n{content}")
+    if session_summary:
+        parts.append(f"[Archived Context Summary]\n\n{session_summary}")
+    return "\n\n---\n\n".join(parts)
 
 
 @dataclass(slots=True)
@@ -57,6 +117,13 @@ class NanobotRuntime:
             LLMProvider._CHAT_RETRY_DELAYS = (1, 2, 4)[:max_retries]
 
             self._bot = Nanobot.from_config(config_path=self.config_path)
+            if os.environ.get("STACKCHAN_COMPACT_PROMPT", "0") == "1":
+                from types import MethodType
+
+                self._bot._loop.context.build_system_prompt = MethodType(
+                    _compact_system_prompt,
+                    self._bot._loop.context,
+                )
             await self._bot._loop._connect_mcp()
             self._loaded_generation = generation
             return self._bot
@@ -84,11 +151,14 @@ class NanobotRuntime:
 
         registry = TurnToolRegistry()
         configured_builtins = os.environ.get("STACKCHAN_SAFE_NANOBOT_TOOLS", "").strip()
-        safe_builtins = (
-            {name.strip() for name in configured_builtins.split(",") if name.strip()}
-            if configured_builtins
-            else set(NanobotRuntime._DEFAULT_SAFE_BUILTINS)
-        )
+        if configured_builtins.lower() in {"none", "off", "disabled"}:
+            safe_builtins: set[str] = set()
+        elif configured_builtins:
+            safe_builtins = {
+                name.strip() for name in configured_builtins.split(",") if name.strip()
+            }
+        else:
+            safe_builtins = set(NanobotRuntime._DEFAULT_SAFE_BUILTINS)
         for wrapped_name in bot._loop.tools.tool_names:
             tool = bot._loop.tools.get(wrapped_name)
             if tool is None:

@@ -61,6 +61,7 @@ class BridgeState:
             rpc_timeout=float(os.environ.get("STACKCHAN_MCP_RPC_TIMEOUT", "20")),
             camera_rpc_timeout=float(os.environ.get("STACKCHAN_CAMERA_MCP_TIMEOUT", "120")),
             confirmation_ttl=float(os.environ.get("STACKCHAN_CONFIRMATION_TTL", "120")),
+            unavailable_markers=() if self.vision_command else ("camera.take_photo",),
         )
         self.mcp_http = MCPHTTPService(self.gateway, host=mcp_host, port=mcp_port)
         self.nanobot = NanobotRuntime(nanobot_config, self.gateway)

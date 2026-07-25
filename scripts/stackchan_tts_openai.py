@@ -62,11 +62,12 @@ def _synthesize(input_path: Path, out_path: Path):
 
     model = os.environ.get("STACKCHAN_TTS_MODEL", "tts-1")
     voice = os.environ.get("STACKCHAN_TTS_VOICE", "alloy")
+    response_format = os.environ.get("STACKCHAN_TTS_RESPONSE_FORMAT", "mp3")
     response = client.audio.speech.create(
         model=model,
         voice=voice,
         input=text,
-        response_format="mp3",
+        response_format=response_format,
     )
     response.write_to_file(out_path)
 
@@ -82,7 +83,8 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="stackchan-tts-") as tmp_dir:
         tmp = Path(tmp_dir)
-        source_path = tmp / "speech.mp3"
+        response_format = os.environ.get("STACKCHAN_TTS_RESPONSE_FORMAT", "mp3")
+        source_path = tmp / f"speech.{response_format}"
         ogg_path = tmp / "speech.ogg"
         _synthesize(Path(input_path), source_path)
         if not source_path.exists() or source_path.stat().st_size == 0:
