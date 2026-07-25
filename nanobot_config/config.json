@@ -1,0 +1,49 @@
+{
+  "providers": {
+    "openai": {
+      "apiKey": "${OPENAI_API_KEY}",
+      "apiBase": "${OPENAI_BASE_URL}",
+      "apiType": "chat_completions",
+      "extraBody": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    }
+  },
+  "modelPresets": {
+    "primary": {
+      "label": "StackChan Nanobot",
+      "provider": "openai",
+      "model": "glm-4.7-flash",
+      "maxTokens": 1024,
+      "contextWindowTokens": 200000,
+      "temperature": 0.2
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "${NANOBOT_WORKSPACE}",
+      "modelPreset": "primary",
+      "maxToolIterations": 4,
+      "timezone": "Asia/Shanghai",
+      "botName": "StackChan"
+    }
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8900
+  },
+  "tools": {
+    "restrictToWorkspace": true,
+    "ssrfWhitelist": ["127.0.0.0/8"],
+    "mcpServers": {
+      "stackchan": {
+        "type": "streamableHttp",
+        "url": "http://127.0.0.1:12801/mcp",
+        "toolTimeout": 20,
+        "enabledTools": ["*"]
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+.run/
+.venv-nanobot/
+.venv*/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.agents/
+.codex/
+.git-local/
+
+# Local secrets and runtime config
+.env
+.env.*
+!.env.example
+!*.env.example
+*.env.local
+*.pem
+*.key
+stackchan-nanobot.env
+nanobot_config/*.local.json
+nanobot_config/workspace/
+
+# Download/build artifacts
+esp-idf/
+esp-idf-*.tar.gz
+models/
+*.gguf
+*.onnx
+*.safetensors
+*.log
+*.pid

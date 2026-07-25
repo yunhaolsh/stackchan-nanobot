@@ -1,0 +1,7 @@
+[submodule "StackChan"]
+	path = StackChan
+	url = git@github.com:yunhaolsh/StackChan.git
+	branch = stackchan-nanobot
+[submodule "StackChan-BSP"]
+	path = StackChan-BSP
+	url = https://github.com/m5stack/StackChan-BSP.git
