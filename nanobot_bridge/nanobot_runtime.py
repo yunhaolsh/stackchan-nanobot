@@ -6,7 +6,7 @@ import asyncio
 import os
 import threading
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +76,7 @@ def _compact_system_prompt(
 class AgentResult:
     content: str
     tools_used: list[str]
+    selected_tools: list[str] = field(default_factory=list)
 
 
 class NanobotRuntime:
@@ -199,7 +200,7 @@ class NanobotRuntime:
             tools=tools,
         )
         result = result_from_response(response, capture)
-        return AgentResult(result.content or "", list(result.tools_used))
+        return AgentResult(result.content or "", list(result.tools_used), sorted(selected))
 
     def run(self, prompt: str, session_key: str = "stackchan:device", timeout: float = 180.0) -> AgentResult:
         future: Future[AgentResult] = asyncio.run_coroutine_threadsafe(

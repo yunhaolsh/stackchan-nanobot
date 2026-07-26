@@ -119,6 +119,22 @@ def test_tts_stream_does_not_burst_after_a_stall():
     assert session.sent_at[2] >= 0.26
 
 
+def test_tts_packet_stream_stops_when_generation_is_canceled():
+    clock = FakeClock()
+    session = FakeSession(clock)
+    checks = iter((True, False, False))
+
+    sent = server._stream_tts_packets(
+        session,
+        [b"one", b"two", b"three"],
+        interval_ms=0,
+        should_continue=lambda: next(checks),
+    )
+
+    assert sent == 1
+    assert [payload[4:] for payload in session.payloads] == [b"one"]
+
+
 def test_tts_text_is_split_without_losing_content():
     text = "第一句话比较短。第二句话也需要完整显示！最后一段没有标点但仍然不能丢失"
     segments = server._split_tts_text(text, max_chars=16)
@@ -175,6 +191,33 @@ def test_raw_tool_markup_is_never_sent_to_the_device(reply):
 
 def test_assistant_reply_sanitizer_keeps_normal_chinese_text():
     assert server._sanitize_assistant_reply("已启动20秒倒计时。") == "已启动20秒倒计时。"
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("设置五点闹钟", "当前仅支持相对倒计时和提醒，暂不支持闹钟、日程或待办。"),
+        ("查看我的待办", "当前仅支持相对倒计时和提醒，暂不支持闹钟、日程或待办。"),
+        ("执行关机", "关机、重启、升级和网络配置不允许通过语音执行。"),
+    ],
+)
+def test_capability_boundary_rejects_unsupported_or_forbidden_actions(prompt, expected):
+    assert server._capability_boundary_reply(prompt) == expected
+
+
+def test_action_success_claim_requires_a_real_tool_result():
+    assert server._guard_unverified_action_reply(
+        "把灯设置为红色",
+        "已经设置为红色。",
+        tools_used=[],
+        selected_tools=["self.robot.set_led_color"],
+    ) == "设备没有返回成功结果，本次操作未执行。"
+    assert server._guard_unverified_action_reply(
+        "把灯设置为红色",
+        "已经设置为红色。",
+        tools_used=["mcp_stackchan_self_robot_set_led_color"],
+        selected_tools=["self.robot.set_led_color"],
+    ) == "已经设置为红色。"
 
 
 def test_ogg_packets_can_be_read_from_a_progressive_stream():

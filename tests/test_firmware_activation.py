@@ -67,6 +67,17 @@ def test_successful_websocket_open_clears_stale_error_audio() -> None:
     assert "last_error_message_.clear();" in opened
 
 
+def test_speaking_state_disables_wake_word_to_avoid_self_interruption() -> None:
+    source = APPLICATION.read_text(encoding="utf-8")
+    speaking = source[
+        source.index("case kDeviceStateSpeaking:") :
+        source.index("case kDeviceStateWifiConfiguring:")
+    ]
+
+    assert "audio_service_.EnableWakeWordDetection(false);" in speaking
+    assert "EnableWakeWordDetection(audio_service_.IsAfeWakeWord())" not in speaking
+
+
 def test_timer_notification_is_rendered_by_the_stackchan_owner_task() -> None:
     source = HAL.read_text(encoding="utf-8")
     scheduler = source[

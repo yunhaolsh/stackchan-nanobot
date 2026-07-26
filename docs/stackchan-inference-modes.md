@@ -13,16 +13,27 @@ servos, LEDs, camera, timers, and MCP Tools. Inference runs on the Bridge host.
 The text LLM does not need to be multimodal: the camera path can use a separate
 VLM, which keeps normal Tool calls faster and lowers memory use.
 
-Local mode uses a mode-specific session namespace, a 60-second LLM request
-deadline, and a 20-message replay window by default. This prevents a long cloud
-conversation from filling the 16K local context window and being cancelled by
-the shorter cloud deadline. These limits can be changed with
-`STACKCHAN_LOCAL_CHAT_TIMEOUT_S` and `STACKCHAN_LOCAL_MAX_MESSAGES`.
+Local mode uses a versioned mode-specific session namespace, a 60-second LLM
+request deadline, and an 8-message replay window by default. The local context
+window is 8K tokens and voice replies are capped at 256 output tokens. This
+prevents a long cloud conversation from filling local context and keeps stale
+tool results out of a new interaction-policy version. These limits can be
+changed with `STACKCHAN_LOCAL_CHAT_TIMEOUT_S`,
+`STACKCHAN_LOCAL_MAX_MESSAGES`, `STACKCHAN_LOCAL_CHAT_CONTEXT_TOKENS`, and
+`STACKCHAN_LOCAL_CHAT_MAX_TOKENS`.
 
 Every turn passes through the local Tool Router before Nanobot calls the model.
-Only the prompt-relevant, policy-approved device capability group is included;
+Only the prompt-relevant, policy-approved operation is included. For example,
+creating a countdown exposes `self.timer.start`, not all timer operations;
 ordinary conversation receives no device Tool schemas. This bounds prompt size
 for both the current 20-Tool firmware and future larger capability inventories.
+
+The Bridge rejects action-success text unless Nanobot reports a real Tool result.
+Absolute alarms, calendar/todo storage, shutdown, reboot, firmware upgrades, and
+network reconfiguration are not implemented voice capabilities and are reported
+as such instead of being simulated by the model. Camera routing requires explicit
+visual language such as taking a photo or describing the current view; the verb
+"查看" alone never selects Vision.
 
 ## Local Baseline
 
@@ -142,6 +153,12 @@ Core Ultra 9 285HX, and about 31 GB of available RAM:
   two-iteration Tool loop in 9.77 s with the final policy prompt.
 - The compact voice prompt reduced the first Tool iteration from 2,091 to 487
   prompt tokens. The earlier unoptimized Nanobot round trip was 29.1 s.
+
+After the interaction-path optimization on the same host, direct warm-process
+measurements were: short local reply 729 ms, structured timer Tool Call 3.17 s,
+local TTS generation 445 ms, and local ASR inference 52 ms. Physical playback
+still runs at real-time audio duration and should not be confused with synthesis
+latency.
 
 These are warm-process measurements, not a physical-device local-mode result.
 Real StackChan audio transport, playback, and device Tool execution still need

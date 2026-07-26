@@ -20,7 +20,7 @@ def build_runtime_config(
     local_model: str,
     local_context_tokens: int,
     local_max_tokens: int,
-    local_max_messages: int = 20,
+    local_max_messages: int = 8,
 ) -> dict[str, Any]:
     if mode not in {"cloud", "local", "hybrid"}:
         raise ValueError(f"unsupported inference mode: {mode}")
@@ -83,9 +83,9 @@ def main() -> int:
     parser.add_argument("--chat-provider", required=True)
     parser.add_argument("--thinking", default="disabled", choices=("disabled", "enabled"))
     parser.add_argument("--local-model", required=True)
-    parser.add_argument("--local-context-tokens", type=int, default=16384)
-    parser.add_argument("--local-max-tokens", type=int, default=1024)
-    parser.add_argument("--local-max-messages", type=int, default=20)
+    parser.add_argument("--local-context-tokens", type=int, default=8192)
+    parser.add_argument("--local-max-tokens", type=int, default=256)
+    parser.add_argument("--local-max-messages", type=int, default=8)
     args = parser.parse_args()
 
     source = json.loads(args.source.read_text(encoding="utf-8"))

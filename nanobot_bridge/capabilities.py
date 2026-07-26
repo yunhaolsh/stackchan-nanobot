@@ -123,7 +123,18 @@ class ToolRouter:
         "led": ("led", "light", "color", "灯", "颜色", "亮灯"),
         "audio": ("audio", "speaker", "volume", "声音", "音量", "静音"),
         "screen": ("screen", "brightness", "theme", "屏幕", "亮度", "主题"),
-        "camera": ("camera", "photo", "vision", "看", "拍照", "相机", "看到"),
+        "camera": (
+            "camera",
+            "photo",
+            "vision",
+            "拍照",
+            "相机",
+            "照片",
+            "画面",
+            "镜头",
+            "看到了什么",
+            "看看周围",
+        ),
         "dance": (
             "dance",
             "motion",
@@ -143,6 +154,99 @@ class ToolRouter:
     @staticmethod
     def _tokens(text: str) -> set[str]:
         return set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{1,6}", text.lower()))
+
+    @staticmethod
+    def _narrow_tools(
+        prompt: str,
+        active_groups: set[str],
+        tools: list[DeviceTool],
+    ) -> list[DeviceTool]:
+        """Keep only the operation schemas needed for an unambiguous turn."""
+        if len(active_groups) != 1:
+            return tools
+        group = next(iter(active_groups))
+        lowered = prompt.lower()
+
+        if group == "timer":
+            if any(word in lowered for word in ("倒计时", "计时器", "timer")):
+                tools = [tool for tool in tools if ".timer." in tool.name.lower()]
+            elif any(word in lowered for word in ("提醒", "reminder")):
+                tools = [tool for tool in tools if "reminder" in tool.name.lower()]
+
+            operation_markers: tuple[str, ...] = ()
+            if any(word in lowered for word in ("取消", "删除", "停止", "cancel")):
+                operation_markers = (".cancel", "stop_reminder")
+            elif any(word in lowered for word in ("暂停", "pause")):
+                operation_markers = (".pause",)
+            elif any(word in lowered for word in ("继续", "恢复", "resume")):
+                operation_markers = (".resume",)
+            elif any(word in lowered for word in ("查看", "查询", "列表", "还有", "剩余", "多久", "list")):
+                operation_markers = (".list", "get_reminders")
+            elif any(word in lowered for word in ("设置", "创建", "开始", "启动", "提醒我", "start", "create")):
+                operation_markers = (".start", "create_reminder")
+            if operation_markers:
+                matched = [
+                    tool
+                    for tool in tools
+                    if any(marker in tool.name.lower() for marker in operation_markers)
+                ]
+                if matched:
+                    return matched
+
+        if group == "head":
+            if any(word in lowered for word in ("多少", "当前", "获取", "查询", "位置")) and not any(
+                word in lowered for word in ("转", "旋转", "抬", "低头", "仰", "俯", "设置")
+            ):
+                matched = [tool for tool in tools if "get_head_angles" in tool.name.lower()]
+            else:
+                matched = [
+                    tool
+                    for tool in tools
+                    if any(marker in tool.name.lower() for marker in ("get_head_angles", "set_head_angles"))
+                ]
+            if matched:
+                return matched
+
+        if group == "dance":
+            marker = "stop_dance" if any(word in lowered for word in ("停止", "别跳", "stop")) else ".dance"
+            matched = [tool for tool in tools if marker in tool.name.lower()]
+            if matched:
+                return matched
+
+        if group == "camera":
+            matched = [tool for tool in tools if "camera.take_photo" in tool.name.lower()]
+            if matched:
+                return matched
+
+        if group == "led":
+            matched = [tool for tool in tools if "set_led_color" in tool.name.lower()]
+            if matched:
+                return matched
+
+        if group == "audio":
+            marker = "get_device_status" if any(word in lowered for word in ("多少", "当前", "查询")) else "set_volume"
+            matched = [tool for tool in tools if marker in tool.name.lower()]
+            if matched:
+                return matched
+
+        if group == "screen":
+            markers = ("screen.get_info",) if any(word in lowered for word in ("多少", "当前", "查询")) else (
+                "screen.set_brightness",
+                "screen.set_theme",
+            )
+            matched = [tool for tool in tools if any(marker in tool.name.lower() for marker in markers)]
+            if matched:
+                return matched
+
+        if group == "status":
+            matched = [
+                tool
+                for tool in tools
+                if any(marker in tool.name.lower() for marker in ("get_device_status", "get_system_info"))
+            ]
+            if matched:
+                return matched
+        return tools
 
     def select(self, prompt: str, tools: list[DeviceTool]) -> list[str]:
         if not tools:
@@ -168,6 +272,8 @@ class ToolRouter:
             prompt,
         ):
             return []
+
+        tools = self._narrow_tools(prompt, active_groups, tools)
 
         scored: list[tuple[int, str]] = []
         for tool in tools:

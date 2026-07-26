@@ -196,6 +196,33 @@ def test_router_maps_chinese_dance_requests_to_dance_tools(prompt):
 
     selected = router.select(prompt, tools)
 
-    assert "self.robot.dance" in selected
-    assert "self.robot.stop_dance" in selected
+    expected = "self.robot.stop_dance" if "停止" in prompt else "self.robot.dance"
+    rejected = "self.robot.dance" if "停止" in prompt else "self.robot.stop_dance"
+    assert selected == [expected]
+    assert rejected not in selected
     assert "self.robot.set_head_angles" not in selected
+
+
+@pytest.mark.parametrize("prompt", ["看一下我的日程安排", "查看我的待办事项", "查询代办事项"])
+def test_router_does_not_treat_viewing_organizer_data_as_camera_intent(prompt):
+    router = ToolRouter(max_tools=5)
+    tools = [
+        tool("self.camera.take_photo", "Take a photo and use vision"),
+        tool("self.timer.list", "List countdown timers"),
+    ]
+
+    assert router.select(prompt, tools) == []
+
+
+def test_router_exposes_only_timer_start_for_countdown_creation():
+    router = ToolRouter(max_tools=8)
+    tools = [
+        tool("self.timer.start", "Create a countdown timer"),
+        tool("self.timer.list", "List countdown timers"),
+        tool("self.timer.pause", "Pause a countdown timer"),
+        tool("self.timer.resume", "Resume a countdown timer"),
+        tool("self.timer.cancel", "Cancel a countdown timer"),
+        tool("self.robot.create_reminder", "Create a relative reminder"),
+    ]
+
+    assert router.select("设置一个20秒倒计时", tools) == ["self.timer.start"]

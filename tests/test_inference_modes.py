@@ -56,7 +56,7 @@ def test_local_mode_does_not_require_cloud_credentials():
     assert values[3].endswith("scripts/stackchan_asr_openai.py")
     assert values[4] == "60"
     assert values[6] == "1"
-    assert values[7] == "stackchan:local"
+    assert values[7] == "stackchan:local:ux2"
 
 
 def test_cloud_mode_still_requires_cloud_credentials():
@@ -73,7 +73,7 @@ def test_hybrid_mode_uses_nanobot_deadline_and_media_fallback():
     assert "stackchan_provider_fallback.py --kind asr" in values[3]
     assert values[4] == "15"
     assert values[6] == "1"
-    assert values[7] == "stackchan:hybrid"
+    assert values[7] == "stackchan:hybrid:ux2"
 
 
 def test_hybrid_nanobot_config_has_local_fallback_without_keys():
@@ -89,7 +89,7 @@ def test_hybrid_nanobot_config_has_local_fallback_without_keys():
         local_max_tokens=1024,
     )
     assert config["agents"]["defaults"]["fallbackModels"] == ["local_fallback"]
-    assert config["agents"]["defaults"]["maxMessages"] == 20
+    assert config["agents"]["defaults"]["maxMessages"] == 8
     assert config["modelPresets"]["local_fallback"]["provider"] == "stackchan_local"
     assert config["providers"]["stackchan_local"]["apiKey"] == "${STACKCHAN_LOCAL_CHAT_API_KEY}"
     Config.model_validate(config)
@@ -116,7 +116,7 @@ def test_local_mode_reduces_context_and_disables_qwen_thinking():
         "chat_template_kwargs": {"enable_thinking": False}
     }
     assert "fallbackModels" not in config["agents"]["defaults"]
-    assert config["agents"]["defaults"]["maxMessages"] == 20
+    assert config["agents"]["defaults"]["maxMessages"] == 8
     Config.model_validate(config)
 
 

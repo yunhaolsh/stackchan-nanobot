@@ -296,6 +296,7 @@ class ClientSession:
         self.tts_lock = threading.Lock()
         self.tts_generation = 0
         self.tts_active = False
+        self.turn_lock = threading.Lock()
         self.mcp_ready = False
         self.closed = False
 
@@ -320,6 +321,10 @@ class ClientSession:
     def is_tts_current(self, generation: int) -> bool:
         with self.tts_lock:
             return self.tts_active and self.tts_generation == generation and not self.closed
+
+    def is_tts_active(self) -> bool:
+        with self.tts_lock:
+            return self.tts_active and not self.closed
 
     def finish_tts(self, generation: int) -> None:
         with self.tts_lock:
@@ -580,6 +585,7 @@ def _stream_tts_packets(
     interval_ms: float | None = None,
     clock: Callable[[], float] | None = None,
     sleeper: Callable[[float], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
 ) -> int:
     """Send Opus near real time so the ESP32 decode queue cannot overflow."""
     if interval_ms is None:
@@ -591,8 +597,12 @@ def _stream_tts_packets(
     interval_seconds = max(0.0, interval_ms / 1000.0)
     deadline = clock()
 
+    sent = 0
     for packet in packets:
+        if should_continue is not None and not should_continue():
+            break
         _send_binary_audio(session, packet)
+        sent += 1
         if interval_seconds <= 0:
             continue
         deadline += interval_seconds
@@ -602,7 +612,7 @@ def _stream_tts_packets(
         elif remaining < -interval_seconds:
             # A stalled socket must not be followed by a catch-up burst.
             deadline = clock()
-    return len(packets)
+    return sent
 
 
 def _read_length_prefixed_packets(data: bytes) -> list[bytes]:
@@ -942,13 +952,35 @@ def _send_assistant_response(state: BridgeState, session: ClientSession, text: s
         if segments:
             # Keep the device idle while the first utterance is synthesized.
             pending_packets[0].result()
+        if not session.is_tts_current(generation):
+            print(
+                f"[tts] response canceled before playback device={session.device_key!r} "
+                f"session={session.session_id}"
+            )
+            return
         session.send_json({"type": "tts", "state": "start"})
         session.send_json({"type": "llm", "emotion": "happy"})
         for index, (segment, future) in enumerate(zip(segments, pending_packets), start=1):
             packets = future.result()
+            if not session.is_tts_current(generation):
+                print(
+                    f"[tts] response canceled before segment={index} "
+                    f"device={session.device_key!r} session={session.session_id}"
+                )
+                return
             print(f"[tts] segment={index}/{len(segments)} text={segment[:80]!r}")
             session.send_json({"type": "tts", "state": "sentence_start", "text": segment})
-            packet_count += _stream_tts_packets(session, packets)
+            packet_count += _stream_tts_packets(
+                session,
+                packets,
+                should_continue=lambda: session.is_tts_current(generation),
+            )
+            if not session.is_tts_current(generation):
+                print(
+                    f"[tts] response canceled during segment={index} packets={packet_count} "
+                    f"device={session.device_key!r} session={session.session_id}"
+                )
+                return
     if packet_count:
         time.sleep(max(0.0, float(os.environ.get("STACKCHAN_TTS_STOP_GRACE_MS", "300")) / 1000.0))
     session.send_json({"type": "tts", "state": "stop"})
@@ -1047,7 +1079,12 @@ def _run_nanobot_once(state: BridgeState, prompt: str, session_key: str = "stack
                 f"tools_used={result.tools_used!r} content={reply[:200]!r}"
             )
             return "模型没有正确调用设备能力，请再说一次。"
-        return reply
+        return _guard_unverified_action_reply(
+            prompt,
+            reply,
+            tools_used=result.tools_used,
+            selected_tools=result.selected_tools,
+        )
     except Exception as exc:
         print(
             f"[nanobot] failed session_key={session_key!r} "
@@ -1221,6 +1258,45 @@ def _contains_tool_markup(reply: str) -> bool:
     return _TOOL_MARKUP_RE.search(reply) is not None
 
 
+_ACTION_REQUEST_RE = re.compile(
+    r"(?:设置|创建|启动|开始|取消|删除|停止|关闭|关机|重启|升级|调整|调到|转头|旋转|跳舞|拍照|记录)"
+)
+_SUCCESS_CLAIM_RE = re.compile(
+    r"(?:已|已经|将|成功).{0,12}(?:设置|创建|启动|开始|取消|删除|停止|关闭|执行|调整|记录|完成)"
+    r"|(?:设置|创建|执行|记录)(?:好|完成|成功)"
+)
+_ORGANIZER_REQUEST_RE = re.compile(r"(?:闹钟|日程|行程|待办|代办|todo)", re.IGNORECASE)
+_RESTRICTED_REQUEST_RE = re.compile(r"(?:关机|重启|升级固件|恢复出厂|修改网络|切换网络|重新配网)")
+
+
+def _capability_boundary_reply(prompt: str) -> str:
+    if _RESTRICTED_REQUEST_RE.search(prompt):
+        return "关机、重启、升级和网络配置不允许通过语音执行。"
+    if _ORGANIZER_REQUEST_RE.search(prompt):
+        return "当前仅支持相对倒计时和提醒，暂不支持闹钟、日程或待办。"
+    return ""
+
+
+def _guard_unverified_action_reply(
+    prompt: str,
+    reply: str,
+    *,
+    tools_used: list[str],
+    selected_tools: list[str],
+) -> str:
+    if tools_used or not _ACTION_REQUEST_RE.search(prompt):
+        return reply
+    if not _SUCCESS_CLAIM_RE.search(reply):
+        return reply
+    print(
+        f"[nanobot] rejected unverified action claim prompt={prompt[:120]!r} "
+        f"selected_tools={selected_tools!r} reply={reply[:160]!r}"
+    )
+    if selected_tools:
+        return "设备没有返回成功结果，本次操作未执行。"
+    return "当前没有可用于执行该操作的设备能力。"
+
+
 def _sanitize_assistant_reply(reply: str) -> str:
     reply = str(reply or "").strip()
     if _is_provider_error_reply(reply):
@@ -1232,7 +1308,7 @@ def _sanitize_assistant_reply(reply: str) -> str:
     return reply
 
 
-def _reply_to_transcript(state: BridgeState, session: ClientSession, transcript: str) -> str:
+def _reply_to_transcript_locked(state: BridgeState, session: ClientSession, transcript: str) -> str:
     target = state.current_client(session)
     if target is None:
         return ""
@@ -1305,7 +1381,11 @@ def _reply_to_transcript(state: BridgeState, session: ClientSession, transcript:
             session_key=stable_session_key,
         )
     else:
-        reply = _run_nanobot_once(state, transcript, session_key=stable_session_key)
+        reply = _capability_boundary_reply(transcript) or _run_nanobot_once(
+            state,
+            transcript,
+            session_key=stable_session_key,
+        )
     target = state.current_client(session)
     if target is None:
         print(f"[turn] reply dropped because device is offline device={session.device_key!r}")
@@ -1317,6 +1397,22 @@ def _reply_to_transcript(state: BridgeState, session: ClientSession, transcript:
         )
     _send_assistant_response(state, target, reply)
     return reply
+
+
+def _reply_to_transcript(state: BridgeState, session: ClientSession, transcript: str) -> str:
+    target = state.current_client(session)
+    if target is None:
+        return ""
+    if not target.turn_lock.acquire(blocking=False):
+        print(
+            f"[turn] dropped overlapping transcript device={target.device_key!r} "
+            f"session={target.session_id} transcript={transcript[:120]!r}"
+        )
+        return ""
+    try:
+        return _reply_to_transcript_locked(state, session, transcript)
+    finally:
+        target.turn_lock.release()
 
 
 def _process_audio_turn(
