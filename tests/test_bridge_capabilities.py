@@ -203,7 +203,7 @@ def test_router_maps_chinese_dance_requests_to_dance_tools(prompt):
     assert "self.robot.set_head_angles" not in selected
 
 
-@pytest.mark.parametrize("prompt", ["看一下我的日程安排", "查看我的待办事项", "查询代办事项"])
+@pytest.mark.parametrize("prompt", ["看一下我的日程安排"])
 def test_router_does_not_treat_viewing_organizer_data_as_camera_intent(prompt):
     router = ToolRouter(max_tools=5)
     tools = [
@@ -212,6 +212,19 @@ def test_router_does_not_treat_viewing_organizer_data_as_camera_intent(prompt):
     ]
 
     assert router.select(prompt, tools) == []
+
+
+@pytest.mark.parametrize("prompt", ["查看我的待办事项", "查询代办事项", "后面有什么安排"])
+def test_router_maps_todo_queries_to_todo_list_without_camera(prompt):
+    router = ToolRouter(max_tools=5)
+    tools = [
+        tool("self.camera.take_photo", "Take a photo and use vision"),
+        tool("self.todo.add", "Add todo"),
+        tool("self.todo.list", "List todo items"),
+        tool("self.todo.delete", "Delete todo"),
+    ]
+
+    assert router.select(prompt, tools) == ["self.todo.list"]
 
 
 def test_router_exposes_only_timer_start_for_countdown_creation():

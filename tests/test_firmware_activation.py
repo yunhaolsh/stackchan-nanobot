@@ -3,10 +3,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APPLICATION = ROOT / "StackChan/firmware/xiaozhi-esp32/main/application.cc"
+XIAOZHI_PATCH = ROOT / "StackChan/firmware/patches/xiaozhi-esp32.patch"
 OTA = ROOT / "StackChan/firmware/xiaozhi-esp32/main/ota.cc"
 WIFI_BOARD = ROOT / "StackChan/firmware/xiaozhi-esp32/main/boards/common/wifi_board.cc"
 STACKCHAN_DISPLAY = ROOT / "StackChan/firmware/main/hal/board/stackchan_display.cc"
 HAL = ROOT / "StackChan/firmware/main/hal/hal.cpp"
+HAL_BRIDGE = ROOT / "StackChan/firmware/main/hal/board/hal_bridge.cc"
+SFX_DIR = ROOT / "StackChan/firmware/main/assets/sfx"
 SDKCONFIG_DEFAULTS_LOCAL = ROOT / "StackChan/firmware/sdkconfig.defaults.local"
 
 
@@ -67,6 +70,39 @@ def test_successful_websocket_open_clears_stale_error_audio() -> None:
     assert "last_error_message_.clear();" in opened
 
 
+def test_agent_preconnects_bridge_and_shows_ready_prompt() -> None:
+    source = APPLICATION.read_text(encoding="utf-8")
+    activation_done = source[
+        source.index("void Application::HandleActivationDoneEvent()") :
+        source.index("void Application::ActivationTask()")
+    ]
+    preconnect = source[
+        source.index("void Application::StartBridgePreconnect()") :
+        source.index("void Application::CheckAssetsVersion()")
+    ]
+    wake = source[
+        source.index("void Application::HandleWakeWordDetectedEvent()") :
+        source.index("void Application::ContinueWakeWordInvoke")
+    ]
+
+    assert '"WiFi 已连接，正在连接 Bridge..."' in activation_done
+    assert "StartBridgePreconnect();" in activation_done
+    assert "protocol_->OpenAudioChannel()" in preconnect
+    assert '"Nanobot 已就绪，请说唤醒词"' in preconnect
+    assert '"Bridge 连接失败，请检查电脑端服务"' in preconnect
+    assert '"Bridge 正在连接，请稍等..."' in wake
+
+
+def test_agent_preconnect_changes_are_recorded_in_xiaozhi_patch() -> None:
+    patch = XIAOZHI_PATCH.read_text(encoding="utf-8")
+
+    assert '"WiFi 已连接，正在连接 Bridge..."' in patch
+    assert "StartBridgePreconnect();" in patch
+    assert '"Nanobot 已就绪，请说唤醒词"' in patch
+    assert '"Bridge 连接失败，请检查电脑端服务"' in patch
+    assert '"Bridge 正在连接，请稍等..."' in patch
+
+
 def test_speaking_state_disables_wake_word_to_avoid_self_interruption() -> None:
     source = APPLICATION.read_text(encoding="utf-8")
     speaking = source[
@@ -93,6 +129,33 @@ def test_timer_notification_is_rendered_by_the_stackchan_owner_task() -> None:
     assert "hal_bridge::app_schedule" not in scheduler
     assert "pop_notification(notification)" in update_task
     assert "avatar().addDecorator" in update_task
+    assert "xiaozhi_ready && is_setup_done && xiaozhi_idle" in update_task
+    assert update_task.index("vTaskDelay(pdMS_TO_TICKS(100))") < update_task.index("LvglLockGuard lock")
+
+
+def test_notification_audio_is_serialized_on_the_application_event_loop() -> None:
+    source = HAL_BRIDGE.read_text(encoding="utf-8")
+    play_sound = source[
+        source.index("void app_play_sound") :
+        source.index("void app_schedule")
+    ]
+
+    assert "Application::GetInstance().Schedule" in play_sound
+    assert "Application::GetInstance().PlaySound(sound)" in play_sound
+
+
+def test_embedded_sound_effects_match_audio_service_opus_format() -> None:
+    converter = (SFX_DIR / "convert_cmd.sh").read_text(encoding="utf-8")
+
+    assert "-ac 1" in converter
+    assert "-ar 48000" in converter
+    assert "-frame_duration 60" in converter
+
+    for name in ("new_notification.ogg", "camera_shutter.ogg"):
+        data = (SFX_DIR / name).read_bytes()
+        opus_head = data.index(b"OpusHead")
+        assert data[opus_head + 9] == 1
+        assert int.from_bytes(data[opus_head + 12 : opus_head + 16], "little") == 48000
 
 
 def test_flash_coredump_is_enabled_for_physical_panic_diagnostics() -> None:

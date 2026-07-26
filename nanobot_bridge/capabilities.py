@@ -99,7 +99,29 @@ class ToolRouter:
     """Select a bounded, prompt-relevant subset of the current device tools."""
 
     _GROUP_KEYWORDS = {
-        "timer": ("timer", "reminder", "计时", "倒计时", "定时", "提醒"),
+        "timer": (
+            "timer",
+            "reminder",
+            "stopwatch",
+            "focus",
+            "计时",
+            "倒计时",
+            "定时",
+            "提醒",
+            "秒表",
+            "正计时",
+            "专注",
+            "番茄钟",
+        ),
+        "todo": (
+            "todo",
+            "待办",
+            "代办",
+            "事项",
+            "安排",
+            "任务",
+            "todo事项",
+        ),
         "head": (
             "head",
             "angle",
@@ -168,22 +190,46 @@ class ToolRouter:
         lowered = prompt.lower()
 
         if group == "timer":
-            if any(word in lowered for word in ("倒计时", "计时器", "timer")):
+            if any(word in lowered for word in ("秒表", "正计时", "stopwatch")):
+                tools = [tool for tool in tools if ".stopwatch." in tool.name.lower()]
+            elif any(word in lowered for word in ("专注", "番茄钟", "focus")):
+                tools = [tool for tool in tools if ".focus." in tool.name.lower()]
+            elif any(word in lowered for word in ("倒计时", "计时器", "timer")):
                 tools = [tool for tool in tools if ".timer." in tool.name.lower()]
             elif any(word in lowered for word in ("提醒", "reminder")):
                 tools = [tool for tool in tools if "reminder" in tool.name.lower()]
 
             operation_markers: tuple[str, ...] = ()
             if any(word in lowered for word in ("取消", "删除", "停止", "cancel")):
-                operation_markers = (".cancel", "stop_reminder")
+                operation_markers = (".cancel", ".stop", "stop_reminder")
             elif any(word in lowered for word in ("暂停", "pause")):
                 operation_markers = (".pause",)
             elif any(word in lowered for word in ("继续", "恢复", "resume")):
                 operation_markers = (".resume",)
             elif any(word in lowered for word in ("查看", "查询", "列表", "还有", "剩余", "多久", "list")):
-                operation_markers = (".list", "get_reminders")
+                operation_markers = (".list", ".status", "get_reminders")
             elif any(word in lowered for word in ("设置", "创建", "开始", "启动", "提醒我", "start", "create")):
                 operation_markers = (".start", "create_reminder")
+            if operation_markers:
+                matched = [
+                    tool
+                    for tool in tools
+                    if any(marker in tool.name.lower() for marker in operation_markers)
+                ]
+                if matched:
+                    return matched
+
+        if group == "todo":
+            tools = [tool for tool in tools if ".todo." in tool.name.lower()]
+            operation_markers: tuple[str, ...] = ()
+            if any(word in lowered for word in ("删除", "移除", "取消", "delete", "remove")):
+                operation_markers = (".clear",) if any(word in lowered for word in ("所有", "全部", "all")) else (".delete",)
+            elif any(word in lowered for word in ("完成", "做完", "标记", "complete", "done")):
+                operation_markers = (".complete",)
+            elif any(word in lowered for word in ("查看", "查询", "列表", "还有", "后面", "安排", "list")):
+                operation_markers = (".list",)
+            elif any(word in lowered for word in ("添加", "新增", "记录", "加入", "add")):
+                operation_markers = (".add",)
             if operation_markers:
                 matched = [
                     tool

@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from asr_diagnostics import AudioSignalMetrics, analyze_wav, infer_no_transcript_reasons
 from audio_endpoint import AudioEndpoint, EndpointDecision, trim_to_speech
-from capabilities import DeviceCapabilityGateway, DeviceTool
+from capabilities import DeviceCapabilityGateway, DeviceTool, DeviceUnavailable, PermissionDenied
 from mcp_http import MCPHTTPService
 from nanobot_runtime import NanobotRuntime
 
@@ -253,6 +253,11 @@ class BridgeState:
                 "state": "sentence_start",
                 "text": "Nanobot 已就绪",
             })
+            session.send_json({
+                "type": "status",
+                "stage": "nanobot_ready",
+                "message": "Nanobot 已就绪",
+            })
         except Exception as exc:
             print(
                 f"[mcp] discovery failed elapsed_ms="
@@ -264,6 +269,11 @@ class BridgeState:
                         "type": "tts",
                         "state": "sentence_start",
                         "text": "设备能力暂时不可用，请稍后再试",
+                    })
+                    session.send_json({
+                        "type": "status",
+                        "stage": "mcp_unavailable",
+                        "message": "设备能力暂时不可用，请稍后再试",
                     })
                 except ConnectionError:
                     pass
@@ -1265,8 +1275,139 @@ _SUCCESS_CLAIM_RE = re.compile(
     r"(?:已|已经|将|成功).{0,12}(?:设置|创建|启动|开始|取消|删除|停止|关闭|执行|调整|记录|完成)"
     r"|(?:设置|创建|执行|记录)(?:好|完成|成功)"
 )
-_ORGANIZER_REQUEST_RE = re.compile(r"(?:闹钟|日程|行程|待办|代办|todo)", re.IGNORECASE)
+_ORGANIZER_REQUEST_RE = re.compile(r"(?:闹钟|日程|行程)", re.IGNORECASE)
+_TODO_REQUEST_RE = re.compile(r"(?:待办|代办|todo|事项|安排|任务)", re.IGNORECASE)
 _RESTRICTED_REQUEST_RE = re.compile(r"(?:关机|重启|升级固件|恢复出厂|修改网络|切换网络|重新配网)")
+_DIGIT_RE = re.compile(r"[零〇一二两三四五六七八九十百\d]+")
+
+
+def _parse_chinese_number(text: str, default: int | None = None) -> int | None:
+    text = (text or "").strip()
+    if not text:
+        return default
+    if text.isdigit():
+        return int(text)
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if text == "十":
+        return 10
+    if "百" in text:
+        left, _, right = text.partition("百")
+        hundreds = digits.get(left, 1 if not left else 0)
+        tail = _parse_chinese_number(right, 0) if right else 0
+        return hundreds * 100 + int(tail or 0)
+    if "十" in text:
+        left, _, right = text.partition("十")
+        tens = digits.get(left, 1 if not left else 0)
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    value = 0
+    for char in text:
+        if char not in digits:
+            return default
+        value = value * 10 + digits[char]
+    return value
+
+
+def _extract_first_number(prompt: str, default: int | None = None) -> int | None:
+    match = _DIGIT_RE.search(prompt)
+    if not match:
+        return default
+    return _parse_chinese_number(match.group(0), default)
+
+
+def _extract_duration_seconds(prompt: str) -> int | None:
+    match = re.search(r"([零〇一二两三四五六七八九十百\d]+)\s*(小时|钟头|分钟|分|秒)", prompt)
+    if not match:
+        return None
+    amount = _parse_chinese_number(match.group(1))
+    if not amount:
+        return None
+    unit = match.group(2)
+    if unit in ("小时", "钟头"):
+        return amount * 3600
+    if unit in ("分钟", "分"):
+        return amount * 60
+    return amount
+
+
+def _format_elapsed(seconds: float | int) -> str:
+    total = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}小时{minutes}分{secs}秒"
+    if minutes:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
+
+
+def _tool_text_result(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            parts = [
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            return "\n".join(part for part in parts if part)
+        return json.dumps(result, ensure_ascii=False)
+    return str(result or "")
+
+
+def _tool_json_result(result: Any) -> dict[str, Any]:
+    text = _tool_text_result(result).strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_list_result(result: Any) -> list[Any]:
+    text = _tool_text_result(result).strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _tool_bool_result(result: Any) -> bool:
+    if isinstance(result, bool):
+        return result
+    text = _tool_text_result(result).strip().lower()
+    return text in ("true", "1", "yes", "ok")
+
+
+def _read_current_head_angles(state: BridgeState) -> tuple[int, int]:
+    try:
+        result = _call_fast_tool(state, "self.robot.get_head_angles", {})
+        parsed = _tool_json_result(result)
+        if parsed:
+            return int(parsed.get("yaw") or 0), int(parsed.get("pitch") or 0)
+    except Exception as exc:
+        print(f"[fast-action] get_head_angles failed; using origin: {exc}")
+    return 0, 0
 
 
 def _capability_boundary_reply(prompt: str) -> str:
@@ -1275,6 +1416,253 @@ def _capability_boundary_reply(prompt: str) -> str:
     if _ORGANIZER_REQUEST_RE.search(prompt):
         return "当前仅支持相对倒计时和提醒，暂不支持闹钟、日程或待办。"
     return ""
+
+
+def _extract_todo_text(prompt: str) -> str:
+    text = prompt.strip()
+    text = re.sub(r"^[请帮我麻烦你]*", "", text)
+    text = re.sub(
+        r"^(?:帮我)?(?:添加|新增|记录|加入|创建|加)(?:一个|一条)?(?:待办|代办|todo|事项|任务)?[：:，, ]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?:到|进)?(?:待办|代办|todo|事项|任务)(?:里|列表)?$", "", text, flags=re.IGNORECASE)
+    return text.strip(" ，,。.!！")
+
+
+def _format_todo_list(items: list[Any]) -> str:
+    active: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("done"):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            active.append(text)
+    if not active:
+        return "当前没有待办事项。"
+    if len(active) <= 3:
+        return "后面的安排有：" + "；".join(active) + "。"
+    return "后面的安排有：" + "；".join(active[:3]) + f"。另外还有{len(active) - 3}项。"
+
+
+def _call_fast_tool(
+    state: BridgeState,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+) -> Any:
+    available = {tool.name for tool in state.gateway.model_tools()}
+    if tool_name not in available:
+        raise DeviceUnavailable(f"tool is unavailable: {tool_name}")
+    return state.gateway.call_tool(tool_name, arguments or {})
+
+
+def _try_fast_local_action(state: BridgeState, prompt: str) -> str | None:
+    """Execute deterministic low-risk device actions without an LLM turn."""
+    normalized = prompt.strip()
+    lowered = normalized.lower()
+    if not normalized:
+        return None
+
+    if _TODO_REQUEST_RE.search(normalized):
+        if re.search(r"(?:查看|查询|列表|还有|后面|安排|什么|哪些)", normalized):
+            items = _tool_list_result(_call_fast_tool(state, "self.todo.list", {"include_done": False}))
+            return _format_todo_list(items)
+        if re.search(r"(?:删除|移除|取消)", normalized):
+            if re.search(r"(?:所有|全部|全部的|all)", normalized, re.IGNORECASE):
+                result = _tool_json_result(_call_fast_tool(state, "self.todo.clear", {"include_done": False}))
+                deleted = int(result.get("deleted") or 0)
+                return f"已删除{deleted}条待办。" if deleted else "当前没有待办事项。"
+            text = _extract_todo_text(
+                re.sub(r"^(?:删除|移除|取消)(?:一个|一条)?(?:待办|代办|todo|事项|任务)?", "", normalized)
+            )
+            if not text:
+                return "请说清楚要删除哪条待办。"
+            ok = _tool_bool_result(_call_fast_tool(state, "self.todo.delete", {"text": text}))
+            return "已删除这条待办。" if ok else "没有找到这条待办。"
+        if re.search(r"(?:完成|做完|标记)", normalized):
+            text = _extract_todo_text(
+                re.sub(r"^(?:完成|做完|标记)(?:一个|一条)?(?:待办|代办|todo|事项|任务)?", "", normalized)
+            )
+            if not text:
+                return "请说清楚完成了哪条待办。"
+            ok = _tool_bool_result(_call_fast_tool(state, "self.todo.complete", {"text": text}))
+            return "已标记完成。" if ok else "没有找到这条待办。"
+        if re.search(r"(?:添加|新增|记录|加入|创建|加)", normalized):
+            text = _extract_todo_text(normalized)
+            if not text:
+                return "请说清楚要添加什么待办。"
+            _call_fast_tool(state, "self.todo.add", {"text": text})
+            print(f"[fast-action] tool=self.todo.add text={text[:80]!r}")
+            return "已添加待办。"
+
+    if re.search(r"(?:秒表|正计时|计时开始)", normalized):
+        if re.search(r"(?:查询|查看|多久|多少|时间|现在)", normalized):
+            result = _tool_json_result(_call_fast_tool(state, "self.stopwatch.status", {}))
+            if not result.get("active"):
+                return "当前没有运行中的秒表。"
+            return f"秒表已运行{_format_elapsed(result.get('elapsed_seconds') or 0)}。"
+        if re.search(r"(?:暂停)", normalized):
+            ok = _tool_bool_result(_call_fast_tool(state, "self.stopwatch.pause", {}))
+            if not ok:
+                return "当前没有正在运行的秒表。"
+            result = _tool_json_result(_call_fast_tool(state, "self.stopwatch.status", {}))
+            return f"秒表已暂停，当前是{_format_elapsed(result.get('elapsed_seconds') or 0)}。"
+        if re.search(r"(?:继续|恢复)", normalized):
+            ok = _tool_bool_result(_call_fast_tool(state, "self.stopwatch.resume", {}))
+            if not ok:
+                return "当前没有可继续的秒表。"
+            result = _tool_json_result(_call_fast_tool(state, "self.stopwatch.status", {}))
+            elapsed = result.get("elapsed_seconds") or 0
+            return f"秒表继续，当前是{_format_elapsed(elapsed)}。"
+        if re.search(r"(?:停止|结束|取消|清除)", normalized):
+            result = _tool_json_result(_call_fast_tool(state, "self.stopwatch.stop", {}))
+            if not result.get("stopped"):
+                return "当前没有运行中的秒表。"
+            return f"秒表已停止，总计{_format_elapsed(result.get('elapsed_seconds') or 0)}。"
+        if re.search(r"(?:开始|启动|开一个|新建|创建)", normalized):
+            _call_fast_tool(state, "self.stopwatch.start", {})
+            print("[fast-action] tool=self.stopwatch.start")
+            return "秒表已开始。"
+
+    if re.search(r"(?:专注|专注模式|番茄钟|番茄工作法|focus)", normalized):
+        if re.search(r"(?:停止|取消|结束)", normalized):
+            stopped = _tool_bool_result(_call_fast_tool(state, "self.focus.stop", {}))
+            return "已停止专注模式。" if stopped else "当前没有运行中的专注模式。"
+        if re.search(r"(?:查询|查看|还有|剩余|多久|状态)", normalized):
+            result = _tool_json_result(_call_fast_tool(state, "self.focus.status", {}))
+            if not result.get("active"):
+                return "当前没有运行中的专注模式。"
+            return f"专注模式还剩{_format_elapsed(result.get('remaining_seconds') or 0)}。"
+        duration = _extract_duration_seconds(normalized)
+        if duration is None:
+            duration = int(os.environ.get("STACKCHAN_DEFAULT_FOCUS_SECONDS", "1500"))
+        duration = max(60, min(duration, 4 * 60 * 60))
+        minutes = max(1, duration // 60)
+        started_at = time.monotonic()
+        _call_fast_tool(
+            state,
+            "self.focus.start",
+            {
+                "duration_seconds": duration,
+                "message": "专注时间结束，休息一下吧。",
+            },
+        )
+        print(
+            f"[fast-action] tool=self.focus.start duration_seconds={duration} "
+            f"elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+        )
+        return f"已启动{minutes}分钟专注模式。"
+
+    if re.search(r"(?:倒计时|计时器)", normalized) and re.search(r"(?:设置|创建|启动|开始)", normalized):
+        match = re.search(r"([零〇一二两三四五六七八九十百\d]+)\s*(秒|分钟|分)", normalized)
+        if not match:
+            return None
+        amount = _parse_chinese_number(match.group(1))
+        if not amount:
+            return None
+        unit = match.group(2)
+        duration = amount * 60 if unit in ("分钟", "分") else amount
+        duration = max(1, min(duration, 24 * 60 * 60))
+        name = f"{amount}{unit}倒计时"
+        started_at = time.monotonic()
+        _call_fast_tool(
+            state,
+            "self.timer.start",
+            {"name": name, "duration_seconds": duration},
+        )
+        print(
+            f"[fast-action] tool=self.timer.start duration_seconds={duration} "
+            f"elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+        )
+        return f"已启动{name}。"
+
+    if re.search(r"(?:跳舞|跳个舞|舞蹈)", normalized):
+        tool_name = "self.robot.stop_dance" if re.search(r"(?:停止|别|不要)", normalized) else "self.robot.dance"
+        style = "robot"
+        if re.search(r"(?:开心|高兴|happy)", normalized, re.IGNORECASE):
+            style = "happy"
+        elif re.search(r"(?:慌张|疯狂|panic)", normalized, re.IGNORECASE):
+            style = "panic"
+        elif re.search(r"(?:看看|环顾|look)", normalized, re.IGNORECASE):
+            style = "look_around"
+        started_at = time.monotonic()
+        args = {} if tool_name.endswith("stop_dance") else {"style": style}
+        _call_fast_tool(state, tool_name, args)
+        print(
+            f"[fast-action] tool={tool_name} args={args} elapsed_ms="
+            f"{int((time.monotonic() - started_at) * 1000)}"
+        )
+        return "已停止舞蹈。" if tool_name.endswith("stop_dance") else "开始跳舞。"
+
+    if re.search(r"(?:转头|头部|抬头|低头|仰头|向左|向右|向上|向下|左转|右转)", normalized):
+        if not re.search(r"(?:转|旋转|抬|低头|仰|向左|向右|向上|向下|左转|右转)", normalized):
+            return None
+        degrees = _extract_first_number(normalized, 30) or 30
+        current_yaw, current_pitch = _read_current_head_angles(state)
+        max_yaw = 128 if degrees > 70 else 45
+        max_pitch_up = 90 if degrees > 45 else 45
+        max_pitch_down = 45
+        yaw = current_yaw
+        pitch = current_pitch
+        direction = ""
+        if re.search(r"(?:右|right)", lowered):
+            yaw = max(-128, min(current_yaw + degrees, max_yaw))
+            direction = "右"
+        elif re.search(r"(?:左|left)", lowered):
+            yaw = max(-max_yaw, min(current_yaw - degrees, 128))
+            direction = "左"
+        elif re.search(r"(?:上|抬|仰|up)", lowered):
+            pitch = max(0, min(current_pitch + degrees, max_pitch_up))
+            direction = "上"
+        elif re.search(r"(?:下|低|俯|down)", lowered):
+            pitch = max(-max_pitch_down, min(current_pitch - degrees, 90))
+            direction = "下"
+        else:
+            return None
+        started_at = time.monotonic()
+        _call_fast_tool(
+            state,
+            "self.robot.set_head_angles",
+            {"yaw": yaw, "pitch": pitch, "speed": 500},
+        )
+        print(
+            f"[fast-action] tool=self.robot.set_head_angles yaw={yaw} pitch={pitch} "
+            f"from=({current_yaw},{current_pitch}) requested_degrees={degrees} "
+            f"elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+        )
+        if direction in ("左", "右"):
+            return f"已向{direction}转{degrees}度，当前水平角度{yaw}度。"
+        return f"已向{direction}转{degrees}度，当前俯仰角度{pitch}度。"
+
+    if re.search(r"(?:灯|灯光|led|颜色)", normalized) and re.search(r"(?:设置|调|变|亮|打开|关闭)", normalized):
+        colors = {
+            "红": (255, 0, 0),
+            "绿": (0, 255, 0),
+            "蓝": (0, 0, 255),
+            "白": (255, 255, 255),
+            "黄": (255, 180, 0),
+            "紫": (160, 64, 255),
+            "关": (0, 0, 0),
+            "灭": (0, 0, 0),
+        }
+        selected = next((rgb for key, rgb in colors.items() if key in normalized), None)
+        if selected is None:
+            return None
+        red, green, blue = selected
+        started_at = time.monotonic()
+        _call_fast_tool(
+            state,
+            "self.robot.set_led_color",
+            {"red": red, "green": green, "blue": blue},
+        )
+        print(
+            f"[fast-action] tool=self.robot.set_led_color rgb={selected} "
+            f"elapsed_ms={int((time.monotonic() - started_at) * 1000)}"
+        )
+        return "已更新灯光。"
+
+    return None
 
 
 def _guard_unverified_action_reply(
@@ -1381,11 +1769,22 @@ def _reply_to_transcript_locked(state: BridgeState, session: ClientSession, tran
             session_key=stable_session_key,
         )
     else:
-        reply = _capability_boundary_reply(transcript) or _run_nanobot_once(
-            state,
-            transcript,
-            session_key=stable_session_key,
-        )
+        reply = _capability_boundary_reply(transcript)
+        if not reply:
+            try:
+                reply = _try_fast_local_action(state, transcript) or ""
+            except (DeviceUnavailable, PermissionDenied) as exc:
+                print(f"[fast-action] unavailable prompt={transcript[:120]!r} error={exc}")
+                reply = ""
+            except Exception as exc:
+                print(f"[fast-action] failed prompt={transcript[:120]!r} error={exc}")
+                reply = "设备能力调用失败，请稍后再试。"
+        if not reply:
+            reply = _run_nanobot_once(
+                state,
+                transcript,
+                session_key=stable_session_key,
+            )
     target = state.current_client(session)
     if target is None:
         print(f"[turn] reply dropped because device is offline device={session.device_key!r}")
@@ -1705,6 +2104,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "state": "sentence_start",
                 "text": "Bridge 已连接，正在加载设备能力",
             })
+            session.send_json({
+                "type": "status",
+                "stage": "bridge_connected",
+                "message": "Bridge 已连接，正在加载设备能力",
+            })
             print(
                 f"[session] hello device={session.device_key!r} session={session.session_id} "
                 f"version={session.version} sample_rate={session.sample_rate} "
@@ -1726,12 +2130,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         if msg_type == "abort":
             reason = str(msg.get("reason") or "")
-            session.cancel_tts(reason or "device_abort")
             if reason == "wake_word_detected":
+                session.cancel_tts("wake_word_detected")
                 session.arm_wake()
                 print(
                     f"[wake] armed from abort device={session.device_key!r} "
                     f"session={session.session_id}"
+                )
+            elif reason:
+                session.cancel_tts(reason)
+            else:
+                print(
+                    f"[ws] bare abort ignored device={session.device_key!r} "
+                    f"session={session.session_id} tts_active={session.is_tts_active()}"
                 )
             return
         if msg_type == "listen":

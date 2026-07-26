@@ -208,6 +208,23 @@ def test_wake_abort_cancels_inflight_tts(monkeypatch):
         peer.close()
 
 
+def test_bare_abort_does_not_cancel_inflight_tts(monkeypatch):
+    device, peer = socket.socketpair()
+    try:
+        monkeypatch.setenv("STACKCHAN_REQUIRE_WAKE_WORD", "1")
+        session = server.ClientSession(device, device_key="device-1")
+        handler = object.__new__(server.BridgeHandler)
+        generation = session.begin_tts()
+
+        handler._handle_ws_text(session, '{"type":"abort"}')
+
+        assert session.is_tts_current(generation) is True
+        assert session.wake_armed is False
+    finally:
+        device.close()
+        peer.close()
+
+
 def test_stale_session_messages_are_ignored(monkeypatch):
     device, peer = socket.socketpair()
     try:
