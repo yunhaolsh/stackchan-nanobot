@@ -1,22 +1,48 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import os
+import select
 import time
 
-import serial
+
+class SerialDisconnected(OSError):
+    pass
 
 
-def open_serial(port: str, baud: int) -> serial.Serial:
-    ser = serial.Serial()
-    ser.port = port
-    ser.baudrate = baud
-    ser.timeout = 0.5
-    # Set modem-control lines before opening; changing them after open can
-    # briefly assert the ESP32-S3 USB-Serial/JTAG reset/download sequence.
-    ser.dtr = False
-    ser.rts = False
-    ser.open()
-    return ser
+class ReadOnlySerial:
+    """Read a Linux CDC ACM endpoint without touching modem-control lines."""
+
+    def __init__(self, port: str, timeout: float = 0.5):
+        self.port = port
+        self.timeout = timeout
+        self.fd = os.open(port, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+
+    def read(self, size: int) -> bytes:
+        try:
+            readable, _, _ = select.select([self.fd], [], [], self.timeout)
+            if not readable:
+                return b""
+            data = os.read(self.fd, size)
+        except OSError as exc:
+            if exc.errno in (errno.EIO, errno.ENODEV, errno.ENXIO, errno.EBADF):
+                raise SerialDisconnected(str(exc)) from exc
+            raise
+        if not data:
+            raise SerialDisconnected("serial endpoint returned EOF")
+        return data
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+
+def open_serial(port: str, baud: int) -> ReadOnlySerial:
+    # USB Serial/JTAG ignores the UART baud rate. Keep the argument in the CLI
+    # for compatibility, but never issue DTR/RTS ioctls from this monitor.
+    del baud
+    return ReadOnlySerial(port)
 
 
 def main() -> int:
@@ -28,7 +54,7 @@ def main() -> int:
 
     end = time.time() + args.seconds
     chunks: list[bytes] = []
-    ser: serial.Serial | None = None
+    ser: ReadOnlySerial | None = None
     opened = 0
     while time.time() < end:
         if ser is None:
@@ -40,20 +66,20 @@ def main() -> int:
                 opened += 1
                 action = "opened" if opened == 1 else "reopened"
                 print(
-                    f"serial {action}: port={args.port}, baud={args.baud}, "
-                    "dtr=false, rts=false"
+                    f"serial {action}: port={args.port}, backend=readonly, "
+                    "modem-control=untouched"
                 )
-            except serial.SerialException:
+            except OSError:
                 time.sleep(0.2)
                 continue
 
         try:
             data = ser.read(4096)
-        except serial.SerialException as exc:
+        except SerialDisconnected as exc:
             print(f"\nserial disconnected ({exc}); waiting for re-enumeration...")
             try:
                 ser.close()
-            except serial.SerialException:
+            except OSError:
                 pass
             ser = None
             time.sleep(0.2)

@@ -1,0 +1,6 @@
+# Keep ModemManager from probing the ESP32-S3 USB Serial/JTAG endpoint.
+ACTION=="add|change", SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
+
+# The StackChan bridge uses Wi-Fi; USB is only for flashing and diagnostics.
+# Disable USB autosuspend so a long-running serial monitor stays passive.
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", ENV{ID_MM_DEVICE_IGNORE}="1", TEST=="power/control", ATTR{power/control}="on"

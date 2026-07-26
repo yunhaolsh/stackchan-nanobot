@@ -87,6 +87,20 @@ Detected serial port:
 /dev/ttyACM0
 ```
 
+On Linux, install the repository udev rule once before long-running serial
+diagnostics. It prevents ModemManager from probing the ESP32-S3 CDC endpoint
+and disables autosuspend for this VID/PID only:
+
+```bash
+cd /home/yunhao/github/stackchan
+./scripts/install_stackchan_udev_rules.sh
+```
+
+Unplug and reconnect the StackChan USB cable once after installation. Without
+this rule, `udevadm info` may report `ID_MM_CANDIDATE=1`; ModemManager can then
+toggle USB modem-control lines and cause `USB_UART_CHIP_RESET` while the
+firmware is otherwise running normally.
+
 Current user is not in the `dialout` group, so flashing required `sudo`.
 
 Flash command used:
@@ -241,6 +255,10 @@ sudo /home/yunhao/github/stackchan/.venv-nanobot/bin/python \
   /home/yunhao/github/stackchan/scripts/diagnose_stackchan_serial.py \
   --port /dev/ttyACM0 --seconds 8
 ```
+
+The diagnostic reader uses a read-only Linux file descriptor and never issues
+DTR/RTS ioctls. `idf.py monitor` and general-purpose serial terminals may reset
+the ESP32-S3 unless their no-reset/passive mode is explicitly enabled.
 
 Current service state verified by the helper:
 
