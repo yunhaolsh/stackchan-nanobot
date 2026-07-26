@@ -151,6 +151,15 @@ def test_provider_errors_are_not_spoken_verbatim():
     assert server._is_provider_error_reply("今天的天气很好") is False
 
 
+def test_local_timeout_is_reported_as_local_inference_timeout(monkeypatch):
+    monkeypatch.setenv("STACKCHAN_INFERENCE_MODE", "local")
+
+    assert (
+        server._sanitize_assistant_reply("Error calling LLM: Request timed out.")
+        == "本地模型响应超时，请稍后重试。"
+    )
+
+
 @pytest.mark.parametrize(
     "reply",
     [

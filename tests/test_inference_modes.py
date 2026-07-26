@@ -37,7 +37,8 @@ def resolve_shell_mode(mode: str, **extra: str) -> subprocess.CompletedProcess[s
             "\"${STACKCHAN_ASR_PROVIDER:-}\" \"${STACKCHAN_ASR_COMMAND:-}\" "
             "\"${NANOBOT_OPENAI_COMPAT_TIMEOUT_S:-}\" "
             "\"${STACKCHAN_TTS_COMMAND:-}\" "
-            "\"${STACKCHAN_COMPACT_PROMPT:-}\"",
+            "\"${STACKCHAN_COMPACT_PROMPT:-}\" "
+            "\"${STACKCHAN_SESSION_NAMESPACE:-}\"",
         ],
         cwd=ROOT,
         env=env,
@@ -53,6 +54,9 @@ def test_local_mode_does_not_require_cloud_credentials():
     values = completed.stdout.splitlines()
     assert values[:3] == ["local", "Qwen3-4B", "local"]
     assert values[3].endswith("scripts/stackchan_asr_openai.py")
+    assert values[4] == "60"
+    assert values[6] == "1"
+    assert values[7] == "stackchan:local"
 
 
 def test_cloud_mode_still_requires_cloud_credentials():
@@ -69,6 +73,7 @@ def test_hybrid_mode_uses_nanobot_deadline_and_media_fallback():
     assert "stackchan_provider_fallback.py --kind asr" in values[3]
     assert values[4] == "15"
     assert values[6] == "1"
+    assert values[7] == "stackchan:hybrid"
 
 
 def test_hybrid_nanobot_config_has_local_fallback_without_keys():
@@ -84,6 +89,7 @@ def test_hybrid_nanobot_config_has_local_fallback_without_keys():
         local_max_tokens=1024,
     )
     assert config["agents"]["defaults"]["fallbackModels"] == ["local_fallback"]
+    assert config["agents"]["defaults"]["maxMessages"] == 20
     assert config["modelPresets"]["local_fallback"]["provider"] == "stackchan_local"
     assert config["providers"]["stackchan_local"]["apiKey"] == "${STACKCHAN_LOCAL_CHAT_API_KEY}"
     Config.model_validate(config)
@@ -110,7 +116,15 @@ def test_local_mode_reduces_context_and_disables_qwen_thinking():
         "chat_template_kwargs": {"enable_thinking": False}
     }
     assert "fallbackModels" not in config["agents"]["defaults"]
+    assert config["agents"]["defaults"]["maxMessages"] == 20
     Config.model_validate(config)
+
+
+def test_local_mode_uses_local_timeout_instead_of_cloud_timeout():
+    completed = resolve_shell_mode("local", STACKCHAN_CHAT_TIMEOUT="15")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines()[4] == "60"
 
 
 @pytest.mark.parametrize("mode", ["cloud", "local", "hybrid"])

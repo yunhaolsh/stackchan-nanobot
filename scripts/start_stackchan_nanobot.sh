@@ -34,7 +34,8 @@ if [[ -n "${STACKCHAN_CHAT_MODEL:-}" ]]; then
     --thinking "${STACKCHAN_CHAT_THINKING:-disabled}" \
     --local-model "${STACKCHAN_LOCAL_CHAT_MODEL:-Qwen3-4B}" \
     --local-context-tokens "${STACKCHAN_LOCAL_CHAT_CONTEXT_TOKENS:-16384}" \
-    --local-max-tokens "${STACKCHAN_LOCAL_CHAT_MAX_TOKENS:-1024}"
+    --local-max-tokens "${STACKCHAN_LOCAL_CHAT_MAX_TOKENS:-1024}" \
+    --local-max-messages "${STACKCHAN_LOCAL_MAX_MESSAGES:-20}"
   NANOBOT_CONFIG="$RUNTIME_NANOBOT_CONFIG"
 fi
 

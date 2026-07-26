@@ -20,6 +20,7 @@ def build_runtime_config(
     local_model: str,
     local_context_tokens: int,
     local_max_tokens: int,
+    local_max_messages: int = 20,
 ) -> dict[str, Any]:
     if mode not in {"cloud", "local", "hybrid"}:
         raise ValueError(f"unsupported inference mode: {mode}")
@@ -46,6 +47,8 @@ def build_runtime_config(
         provider.pop("extraBody", None)
 
     defaults = config.setdefault("agents", {}).setdefault("defaults", {})
+    if mode in {"local", "hybrid"}:
+        defaults["maxMessages"] = max(1, local_max_messages)
     if mode == "hybrid":
         config["providers"]["stackchan_local"] = {
             "apiKey": "${STACKCHAN_LOCAL_CHAT_API_KEY}",
@@ -82,6 +85,7 @@ def main() -> int:
     parser.add_argument("--local-model", required=True)
     parser.add_argument("--local-context-tokens", type=int, default=16384)
     parser.add_argument("--local-max-tokens", type=int, default=1024)
+    parser.add_argument("--local-max-messages", type=int, default=20)
     args = parser.parse_args()
 
     source = json.loads(args.source.read_text(encoding="utf-8"))
@@ -94,6 +98,7 @@ def main() -> int:
         local_model=args.local_model,
         local_context_tokens=args.local_context_tokens,
         local_max_tokens=args.local_max_tokens,
+        local_max_messages=args.local_max_messages,
     )
     args.destination.parent.mkdir(parents=True, exist_ok=True)
     args.destination.write_text(

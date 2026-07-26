@@ -1040,7 +1040,7 @@ def _run_nanobot_once(state: BridgeState, prompt: str, session_key: str = "stack
         reply = result.content.strip()
         if _is_provider_error_reply(reply):
             print(f"[nanobot] provider error sanitized content={reply[:160]!r}")
-            return "模型服务繁忙，请稍后再试。"
+            return _provider_error_message(reply)
         if _contains_tool_markup(reply):
             print(
                 f"[nanobot] malformed tool markup sanitized "
@@ -1055,7 +1055,7 @@ def _run_nanobot_once(state: BridgeState, prompt: str, session_key: str = "stack
         )
         if "approved StackChan tools" in str(exc) or "not connected" in str(exc):
             return "设备正在重新连接，请稍后再试。"
-        return "模型服务繁忙，请稍后再试。"
+        return _provider_error_message(str(exc))
 
 
 def _broadcast_assistant_text(state: BridgeState, text: str) -> int:
@@ -1199,6 +1199,18 @@ def _is_provider_error_reply(reply: str) -> bool:
     )
 
 
+def _provider_error_message(reply: str) -> str:
+    normalized = str(reply or "").strip().lower()
+    mode = os.environ.get("STACKCHAN_INFERENCE_MODE", "cloud").strip().lower()
+    if "timed out" in normalized or "timeout" in normalized:
+        if mode == "local":
+            return "本地模型响应超时，请稍后重试。"
+        return "模型响应超时，请稍后重试。"
+    if mode == "local":
+        return "本地模型调用失败，请稍后重试。"
+    return "模型服务繁忙，请稍后再试。"
+
+
 _TOOL_MARKUP_RE = re.compile(
     r"<\s*/?\s*(?:tool_call|tool_calls|function_call|arg_key|arg_value)\b",
     re.IGNORECASE,
@@ -1212,7 +1224,7 @@ def _contains_tool_markup(reply: str) -> bool:
 def _sanitize_assistant_reply(reply: str) -> str:
     reply = str(reply or "").strip()
     if _is_provider_error_reply(reply):
-        return "模型服务繁忙，请稍后再试。"
+        return _provider_error_message(reply)
     if _contains_tool_markup(reply):
         return "模型没有正确调用设备能力，请再说一次。"
     if not reply:
@@ -1363,6 +1375,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "mcp_url": self.state.mcp_url,
                 "nanobot_config": self.state.nanobot_config or "",
                 "ws_clients": len(self.state.clients()),
+                "inference_mode": os.environ.get("STACKCHAN_INFERENCE_MODE", "cloud"),
+                "chat_model": os.environ.get("STACKCHAN_CHAT_MODEL", ""),
+                "chat_timeout_s": float(
+                    os.environ.get("NANOBOT_OPENAI_COMPAT_TIMEOUT_S", "0") or 0
+                ),
+                "session_namespace": os.environ.get("STACKCHAN_SESSION_NAMESPACE", "stackchan"),
                 "asr_configured": bool(self.state.asr_command),
                 "tts_configured": bool(self.state.tts_command),
                 "vision_configured": bool(self.state.vision_command),
